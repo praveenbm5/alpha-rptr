@@ -325,11 +325,11 @@ class BackTest(Stub):
         logger.info("-------")
         logger.info(f"Checking Candles:")
         logger.info("-------")
-        logger.info(f"Start: {df.iloc[0][0]}")
-        logger.info(f"End: {df.iloc[-1][0]}")
+        logger.info(f"Start: {df.iloc[0].iloc[0]}")
+        logger.info(f"End: {df.iloc[-1].iloc[0]}")
         logger.info("-------")
 
-        diff = (dateutil.parser.isoparse(df.iloc[1][0])-dateutil.parser.isoparse(df.iloc[0][0])).total_seconds()
+        diff = (dateutil.parser.isoparse(df.iloc[1].iloc[0])-dateutil.parser.isoparse(df.iloc[0].iloc[0])).total_seconds()
 
         logger.info(f"Interval: {diff}s")
         logger.info("-------")
@@ -339,8 +339,8 @@ class BackTest(Stub):
         prev_current_date = None
 
         for index in range(0, rows-1):
-            current_date = dateutil.parser.isoparse(df.iloc[index][0])
-            next_date = dateutil.parser.isoparse(df.iloc[index+1][0])
+            current_date = dateutil.parser.isoparse(df.iloc[index].iloc[0])
+            next_date = dateutil.parser.isoparse(df.iloc[index+1].iloc[0])
 
             diff2 = (next_date-current_date).total_seconds()
             if diff2 != diff:
