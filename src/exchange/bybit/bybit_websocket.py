@@ -343,16 +343,19 @@ class BybitWs:
                 if obj["op"] == "auth" and obj["success"]:
                     self.bootstrapped = True    
                     logger.info("WSP Connection Successful")
-                if (obj["op"] == "ping" or obj["op"] == "pong") and obj["req_id"] == "private":
-                    self.monitor.ping_topic("private_ws")
-                    self.log("WSP Keep Alive Received!")
-                    # Send a heartbeat to Healthchecks.io when private ws does ping-pong
-                    try:
-                        requests.get(conf['healthchecks.io'][self.account]['listenkey_heartbeat'])
-                        #logger.info("WS Keep Alive Received!") 
-                    except Exception as e:
-                        self.log(f"Healthcheck Error: {e}")
-                        pass   
+                if (obj["op"] == "ping" or obj["op"] == "pong"):
+                    if obj["req_id"] == "private":
+                        self.monitor.ping_topic("private_ws")
+                        self.log("WSP Keep Alive Received!")
+                        # Send a heartbeat to Healthchecks.io when private ws does ping-pong
+                        try:
+                            requests.get(conf['healthchecks.io'][self.account]['listenkey_heartbeat'])
+                            #logger.info("WS Keep Alive Received!") 
+                        except Exception as e:
+                            self.log(f"Healthcheck Error: {e}")
+                            pass   
+                    else:
+                        self.log("WS Keep Alive Received!")
 
         except Exception as e:
             logger.error(f"On Message: {e}")

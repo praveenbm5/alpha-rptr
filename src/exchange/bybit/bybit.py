@@ -2202,6 +2202,7 @@ class Bybit:
                                         
             try:
                 if self.strategy is not None:   
+                    self.log_balance()
                     self.timestamp = re_sample_data.iloc[-1].name.isoformat()           
                     self.strategy(t, open, close, high, low, volume)              
                     # Evaluation of profit and loss
@@ -2245,6 +2246,22 @@ class Bybit:
             "margin": balance+pnl,
             "profit": pnl,
             "pnl": pnl_perc
+        },
+        {
+            "exchange": conf["args"].exchange,
+            "account": self.account,
+            "pair": self.pair,
+            "base_asset": self.base_asset,
+            "quote_asset": self.quote_asset,
+            "strategy": conf["args"].strategy
+        })
+
+    def log_balance(self):
+
+        balance = self.get_balance()
+
+        log_metrics(datetime.utcnow(), "margin", {
+            "balance": balance
         },
         {
             "exchange": conf["args"].exchange,
