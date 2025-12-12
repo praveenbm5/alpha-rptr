@@ -68,6 +68,8 @@ class BinanceFutures:
         self.quote_asset = None
         # Quote Rounding
         self.quote_rounding = None
+        # Tick Size
+        self.tick_size = None
         # Use testnet?
         self.demo = demo
         # Is bot running?
@@ -190,6 +192,8 @@ class BinanceFutures:
             self.quote_asset = symbol[0]['quoteAsset']
             self.quote_rounding = symbol[0]['pricePrecision']      
 
+            self.tick_size = float(symbol[0]['filters'][0]['tickSize'])  
+
         logger.info(f"Current Leverage: {self.get_leverage()}")
         if conf["args"].leverage is not None:
             self.set_leverage(conf["args"].leverage)       
@@ -197,7 +201,8 @@ class BinanceFutures:
         self.sync()  
 
         logger.info(f"Asset: {self.base_asset} Rounding: {self.asset_rounding} "\
-                    f"- Quote: {self.quote_asset} Rounding: {self.quote_rounding}") 
+                    f"- Quote: {self.quote_asset} Rounding: {self.quote_rounding} "\
+                    f"- Tick Size: {self.tick_size}") 
 
         logger.info(f"Position Size: {self.position_size:.3f} Entry Price: {self.entry_price:.2f}")
         
@@ -890,6 +895,11 @@ class BinanceFutures:
 
         side = "BUY" if long else "SELL"
         ord_qty = abs(round(qty, round_decimals if round_decimals != None else self.asset_rounding))
+
+        #Adjust for Tick Size
+        limit = round(float(limit - limit % self.tick_size), self.quote_rounding)
+        stop = round(float(stop - stop % self.tick_size), self.quote_rounding)
+
         order = self.get_open_order(id)
         ord_id = id + ord_suffix() #if order is None else order["clientOrderId"]
 
@@ -1620,7 +1630,7 @@ class BinanceFutures:
                                    
             source = to_data_frame(source_to_object_list)
 
-            data = pd.concat([data, source])
+            data = pd.concat([data if not data.empty else None, source])
                        
             if right_time > source.iloc[-1].name + delta(fetch_bin_size):
                 left_time = source.iloc[-1].name + delta(fetch_bin_size)
@@ -1666,7 +1676,7 @@ class BinanceFutures:
         """
         # Binance can output wierd timestamps - Eg. 2021-05-25 16:04:59.999000+00:00
         # We need to round up to the nearest second for further processing
-        new_data = new_data.rename(index={new_data.iloc[0].name: new_data.iloc[0].name.ceil(freq='1T')})               
+        new_data = new_data.rename(index={new_data.iloc[0].name: new_data.iloc[0].name.ceil(freq='1min')})               
 
         # If OHLCV data is not initialized, create and fetch data
         if self.timeframe_data is None:
@@ -1756,6 +1766,7 @@ class BinanceFutures:
                                     
             try:
                 if self.strategy is not None:   
+                    self.log_balance()
                     self.timestamp = re_sample_data.iloc[-1].name.isoformat()           
                     self.strategy(t, open, close, high, low, volume)              
                 self.timeframe_info[t]['last_action_time'] = re_sample_data.iloc[-1].name
@@ -2029,6 +2040,22 @@ class BinanceFutures:
             "margin": balance+profit,
             "profit": profit,
             "pnl": pnl
+        },
+        {
+            "exchange": conf["args"].exchange,
+            "account": self.account,
+            "pair": self.pair,
+            "base_asset": self.base_asset,
+            "quote_asset": self.quote_asset,
+            "strategy": conf["args"].strategy
+        })
+
+    def log_balance(self):
+
+        balance = self.get_balance()
+        
+        log_metrics(datetime.utcnow(), "margin", {
+            "balance": balance
         },
         {
             "exchange": conf["args"].exchange,

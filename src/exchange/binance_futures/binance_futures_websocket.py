@@ -200,9 +200,23 @@ class BinanceFuturesWs:
                     self.__emit('wallet', action, datas['a']['B'][0])
                     self.__emit('margin', action, datas['a']['B'][0])                  
                     
-                # ORDER_TRADE_UPDATE
+                # ORDER_TRADE_UPDATE (regular orders)
                 elif e.startswith("ORDER_TRADE_UPDATE"):
                     self.__emit('order', action, datas['o'])
+                
+                # ALGO_UPDATE (conditional orders)
+                elif e.startswith("ALGO_UPDATE"):
+                    # Normalize algo order fields with safe defaults
+                    algo_data = datas['o'].copy()
+                    
+                    # Direct mapping from ALGO fields to ORDER fields with safe defaults
+                    algo_data['c'] = algo_data.get('caid', '')        # clientAlgoId -> clientOrderId
+                    algo_data['i'] = str(algo_data.get('aid', '0'))   # algoId -> orderId  
+                    algo_data['z'] = algo_data.get('aq', '0')         # executed quantity -> filled quantity
+                    algo_data['sp'] = algo_data.get('tp', '0')        # trigger price -> stop price
+                    algo_data['ap'] = algo_data.get('ap', '0.0')      # average price -> average price (default 0.0 for new orders)
+                    
+                    self.__emit('order', action, algo_data)
                 #todo orderbook stream
                 # elif table.startswith(""):
                 #     self.__emit(e, action, data)

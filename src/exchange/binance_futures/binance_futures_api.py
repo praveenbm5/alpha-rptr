@@ -26,7 +26,7 @@ from urllib.parse import urlparse
 import time, hashlib, hmac
 import requests
 from requests.adapters import HTTPAdapter
-from requests.packages.urllib3.util.retry import Retry
+from urllib3.util.retry import Retry
 import logging
 from operator import itemgetter
 
@@ -272,6 +272,70 @@ class Client(object):
             except ValueError:
                 raise BinanceRequestException('Invalid Response: %s' % self.response.text)
 
+    def _normalize_algo_order(self, algo_order):
+        """
+        Normalize algo order fields to match regular order field names.
+        This ensures compatibility with existing code that expects regular order fields.
+        
+        Args:
+            algo_order (dict): Algo order data from API response
+            
+        Returns:
+            dict: Normalized order data with regular order field names
+        """
+        if not isinstance(algo_order, dict):
+            return algo_order
+            
+        normalized = algo_order.copy()
+        
+        # Map algo order fields to regular order fields
+        # clientAlgoId -> clientOrderId
+        if 'clientAlgoId' in algo_order:
+            normalized['clientOrderId'] = algo_order['clientAlgoId']
+            
+        # algoId -> orderId  
+        if 'algoId' in algo_order:
+            normalized['orderId'] = str(algo_order['algoId'])
+            
+        # Map other potential field differences
+        # executedQty might be different field name in algo orders
+        if 'executedQty' not in normalized and 'filledQty' in algo_order:
+            normalized['executedQty'] = algo_order['filledQty']
+            
+        # Ensure required fields exist with defaults if missing
+        if 'clientOrderId' not in normalized:
+            normalized['clientOrderId'] = normalized.get('clientAlgoId', '')
+            
+        if 'orderId' not in normalized:
+            normalized['orderId'] = str(normalized.get('algoId', '0'))
+            
+        return normalized
+
+    def _normalize_algo_orders_list(self, orders):
+        """
+        Normalize a list of algo orders to match regular order field names.
+        
+        Args:
+            orders (list or tuple): List of algo orders or tuple containing (orders, response)
+            
+        Returns:
+            list or tuple: Normalized orders with same structure as input
+        """
+        if isinstance(orders, tuple) and len(orders) == 2:
+            # Handle (response_data, raw_response) tuple format
+            order_list, raw_response = orders
+            if isinstance(order_list, list):
+                normalized_list = [self._normalize_algo_order(order) for order in order_list]
+                return (normalized_list, raw_response)
+            else:
+                return orders
+        elif isinstance(orders, list):
+            # Handle direct list format
+            return [self._normalize_algo_order(order) for order in orders]
+        else:
+            # Handle single order or other formats
+            return self._normalize_algo_order(orders)
+
     def _get(self, path, signed=False, version=PUBLIC_API_VERSION, **kwargs):
         return self._request_futures_api('get', path, signed, **kwargs)
 
@@ -441,19 +505,203 @@ class Client(object):
         """Send in a new order.
         https://binance-docs.github.io/apidocs/futures/en/#new-order-trade
         """
-        return self._request_futures_api('post', 'order', True, data=params)
+        # Check if this is a conditional order that needs algo endpoints
+        order_type = params.get('type', '')
+        conditional_types = ['STOP_MARKET', 'TAKE_PROFIT_MARKET', 'STOP', 'TAKE_PROFIT', 'TRAILING_STOP_MARKET']
+        
+        if order_type in conditional_types:
+            # Route to algo order endpoint
+            return self._create_algo_order(**params)
+        else:
+            # Use regular order endpoint
+            return self._request_futures_api('post', 'order', True, data=params)
+    
+    def _create_algo_order(self, **params):
+        """Internal method to create algo orders.
+        Maps regular order params to algo order format.
+        """
+        # Map regular order parameters to algo order parameters
+        algo_params = {}
+        
+        # Required parameters
+        algo_params['symbol'] = params['symbol']
+        algo_params['side'] = params['side']
+        algo_params['algoType'] = 'CONDITIONAL'  # Always CONDITIONAL for all algo orders
+        
+        # Map order type - use 'type' parameter for actual order type
+        order_type = params['type']
+        algo_params['type'] = order_type
+        
+        # Map quantity if provided
+        if 'quantity' in params:
+            algo_params['quantity'] = params['quantity']
+        
+        # Map price parameters based on order type
+        if order_type == 'STOP_MARKET':
+            algo_params['triggerPrice'] = params['stopPrice']  # stopPrice -> triggerPrice
+        elif order_type == 'TAKE_PROFIT_MARKET':
+            algo_params['triggerPrice'] = params['stopPrice']  # stopPrice -> triggerPrice
+        elif order_type == 'STOP':
+            algo_params['price'] = params['price']
+            algo_params['triggerPrice'] = params['stopPrice']  # stopPrice -> triggerPrice
+        elif order_type == 'TAKE_PROFIT':
+            algo_params['price'] = params['price']
+            algo_params['triggerPrice'] = params['stopPrice']  # stopPrice -> triggerPrice
+        elif order_type == 'TRAILING_STOP_MARKET':
+            if 'activationPrice' in params:
+                algo_params['activationPrice'] = params['activationPrice']
+            if 'callbackRate' in params:
+                algo_params['callbackRate'] = params['callbackRate']
+        
+        # Optional parameters with proper mapping
+        if 'newClientOrderId' in params:
+            algo_params['clientAlgoId'] = params['newClientOrderId']  # newClientOrderId -> clientAlgoId
+        if 'reduceOnly' in params:
+            algo_params['reduceOnly'] = params['reduceOnly']
+        if 'closePosition' in params:
+            algo_params['closePosition'] = params['closePosition']
+        if 'timeInForce' in params:
+            algo_params['timeInForce'] = params['timeInForce']
+        if 'positionSide' in params:
+            algo_params['positionSide'] = params['positionSide']
+        if 'priceProtect' in params:
+            algo_params['priceProtect'] = params['priceProtect']
+            
+        # Map working type (trigger_by)
+        if 'trigger_by' in params:
+            algo_params['workingType'] = params['trigger_by']
+        elif 'workingType' in params:
+            algo_params['workingType'] = params['workingType']
+        else:
+            algo_params['workingType'] = 'CONTRACT_PRICE'  # Default
+        
+        try:
+            return self.futures_create_algo_order(**algo_params)
+        except BinanceAPIException as e:
+            # If algo endpoint fails with specific error, fall back to regular endpoint
+            if hasattr(e, 'code') and str(e.code) == '-4120':
+                # This shouldn't happen in the new system, but just in case
+                return self._request_futures_api('post', 'order', True, data=params)
+            else:
+                raise e
+
+    def futures_create_algo_order(self, **params):
+        """Place an algo order
+        https://binance-docs.github.io/apidocs/futures/en/#place-an-algo-order-trade
+        """
+        return self._request_futures_api('post', 'algoOrder', True, data=params)
+
+    def futures_cancel_algo_order(self, **params):
+        """Cancel an algo order
+        https://binance-docs.github.io/apidocs/futures/en/#cancel-an-algo-order-trade
+        """
+        return self._request_futures_api('delete', 'algoOrder', True, data=params)
+
+    def futures_cancel_all_algo_orders(self, **params):
+        """Cancel all open algo orders
+        https://binance-docs.github.io/apidocs/futures/en/#cancel-all-open-algo-orders-trade
+        """
+        return self._request_futures_api('delete', 'algoOpenOrders', True, data=params)
+
+    def futures_get_algo_order(self, **params):
+        """Query an algo order
+        https://binance-docs.github.io/apidocs/futures/en/#query-an-algo-order-user_data
+        """
+        return self._request_futures_api('get', 'algoOrder', True, data=params)
+
+    def futures_get_open_algo_orders(self, **params):
+        """Query algo open order(s)
+        https://binance-docs.github.io/apidocs/futures/en/#query-algo-open-orders-user_data
+        """
+        return self._request_futures_api('get', 'openAlgoOrders', True, data=params)
+
+    def futures_get_all_algo_orders(self, **params):
+        """Query algo order(s)
+        https://binance-docs.github.io/apidocs/futures/en/#query-algo-orders-user_data
+        """
+        return self._request_futures_api('get', 'allAlgoOrders', True, data=params)
 
     def futures_get_order(self, **params):
         """Check an order's status.
+        Automatically tries both regular and algo order endpoints.
         https://binance-docs.github.io/apidocs/futures/en/#query-order-user_data
         """
-        return self._request_futures_api('get', 'order', True, data=params)
+        # Try regular order endpoint first
+        try:
+            return self._request_futures_api('get', 'order', True, data=params)
+        except BinanceAPIException as e:
+            # If not found in regular orders, try algo orders
+            # Convert parameters for algo order query
+            algo_params = {}
+            if 'orderId' in params:
+                algo_params['algoId'] = params['orderId']
+            if 'origClientOrderId' in params:
+                algo_params['clientAlgoId'] = params['origClientOrderId']
+            if 'symbol' in params:
+                algo_params['symbol'] = params['symbol']
+            if 'recvWindow' in params:
+                algo_params['recvWindow'] = params['recvWindow']
+            
+            # Only try algo endpoint if we have proper parameters
+            if 'algoId' in algo_params or 'clientAlgoId' in algo_params:
+                algo_order = self.futures_get_algo_order(**algo_params)
+                # Normalize the algo order response to match regular order fields
+                return self._normalize_algo_orders_list(algo_order)
+            else:
+                # Re-raise original exception if we can't query algo orders
+                raise e
 
     def futures_get_open_orders(self, **params):
         """Get all open orders on a symbol.
+        Combines both regular and algo open orders.
         https://binance-docs.github.io/apidocs/futures/en/#current-open-orders-user_data
         """
-        return self._request_futures_api('get', 'openOrders', True, data=params)
+        # Create a copy of params to avoid mutation issues
+        params_copy = params.copy()
+        
+        # Get regular open orders
+        regular_orders = self._request_futures_api('get', 'openOrders', True, data=params)
+        
+        # Get algo open orders using the clean copy
+        try:
+            algo_orders = self.futures_get_open_algo_orders(**params_copy)
+            
+            # Normalize algo orders to have regular order field names
+            algo_orders = self._normalize_algo_orders_list(algo_orders)
+            
+            # Extract data properly handling both tuple and direct formats
+            if isinstance(regular_orders, tuple):
+                # Handle (response, raw_response) tuple format
+                regular_data = regular_orders[0] if regular_orders[0] else []
+                
+                if isinstance(algo_orders, tuple):
+                    algo_data = algo_orders[0] if algo_orders[0] else []
+                else:
+                    algo_data = algo_orders if algo_orders else []
+                
+                # Ensure both are lists before concatenation
+                if not isinstance(regular_data, list):
+                    regular_data = []
+                if not isinstance(algo_data, list):
+                    algo_data = []
+                    
+                combined_data = regular_data + algo_data
+                return (combined_data, regular_orders[1])  # Return combined data with original raw response
+            else:
+                # Handle direct response format
+                regular_data = regular_orders if regular_orders else []
+                algo_data = algo_orders if algo_orders else []
+                
+                # Ensure both are lists before concatenation
+                if not isinstance(regular_data, list):
+                    regular_data = []
+                if not isinstance(algo_data, list):
+                    algo_data = []
+                    
+                return regular_data + algo_data
+        except BinanceAPIException:
+            # If algo orders query fails, just return regular orders
+            return regular_orders
 
     def futures_get_all_orders(self, **params):
         """Get all futures account orders; active, canceled, or filled.
@@ -463,15 +711,65 @@ class Client(object):
 
     def futures_cancel_order(self, **params):
         """Cancel an active futures order.
+        Automatically tries both regular and algo order endpoints.
         https://binance-docs.github.io/apidocs/futures/en/#cancel-order-trade
         """
-        return self._request_futures_api('delete', 'order', True, data=params)
+        # Try regular order endpoint first
+        try:
+            return self._request_futures_api('delete', 'order', True, data=params)
+        except BinanceAPIException as e:
+            # If not found in regular orders, try algo orders
+            # Convert parameters for algo order cancel
+            algo_params = {}
+            if 'orderId' in params:
+                algo_params['algoId'] = params['orderId']
+            if 'origClientOrderId' in params:
+                algo_params['clientAlgoId'] = params['origClientOrderId']
+            if 'symbol' in params:
+                algo_params['symbol'] = params['symbol']
+            if 'recvWindow' in params:
+                algo_params['recvWindow'] = params['recvWindow']
+            
+            # Only try algo endpoint if we have proper parameters
+            if 'algoId' in algo_params or 'clientAlgoId' in algo_params:
+                return self.futures_cancel_algo_order(**algo_params)
+            else:
+                # Re-raise original exception if we can't cancel algo orders
+                raise e
 
     def futures_cancel_all_open_orders(self, **params):
-        """Cancel all open futures orders
+        """Cancel all open futures orders.
+        Cancels both regular and algo open orders.
         https://binance-docs.github.io/apidocs/futures/en/#cancel-all-open-orders-trade
         """
-        return self._request_futures_api('delete', 'allOpenOrders', True, data=params)
+        # Create a copy of params to avoid mutation issues
+        params_copy = params.copy()
+        
+        # Cancel regular orders
+        regular_result = self._request_futures_api('delete', 'allOpenOrders', True, data=params)
+        
+        # Cancel algo orders using the clean copy
+        try:
+            algo_result = self.futures_cancel_all_algo_orders(**params_copy)
+            # Combine results if both are successful
+            if isinstance(regular_result, tuple):
+                # Handle (response, raw_response) tuple format
+                regular_data = regular_result[0] if regular_result[0] else {}
+                algo_data = algo_result[0] if isinstance(algo_result, tuple) and algo_result[0] else algo_result if algo_result else {}
+                # Return combined result indicating both regular and algo orders were cancelled
+                combined_data = {
+                    'regular_orders_cancelled': regular_data,
+                    'algo_orders_cancelled': algo_data
+                }
+                return (combined_data, regular_result[1])
+            else:
+                return {
+                    'regular_orders_cancelled': regular_result,
+                    'algo_orders_cancelled': algo_result
+                }
+        except BinanceAPIException as e:
+            # If algo orders cancellation fails, just return regular orders result
+            return regular_result
 
     def futures_cancel_orders(self, **params):
         """Cancel multiple futures orders
