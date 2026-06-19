@@ -2053,9 +2053,14 @@ class BinanceFutures:
     def log_balance(self):
 
         balance = self.get_balance()
+        pnl = self.get_pnl()
+        profit = self.get_profit()
         
         log_metrics(datetime.utcnow(), "margin", {
-            "balance": float(balance)
+            "balance": float(balance),
+            "margin": float(balance+profit),
+            "profit": float(profit),
+            "pnl": float(pnl)
         },
         {
             "exchange": conf["args"].exchange,
