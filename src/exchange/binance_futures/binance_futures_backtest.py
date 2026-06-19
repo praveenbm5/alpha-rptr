@@ -20,7 +20,9 @@ from src.exchange.backtest import BackTest
 from src.exchange.binance_futures.binance_futures_stub import BinanceFuturesStub
 
 
-class BinanceFuturesBackTest(BackTest, BinanceFuturesStub):   
+class BinanceFuturesBackTest(BackTest, BinanceFuturesStub):
+    # Exchange identifier — used by load_ohlcv to rebuild paths with base_tf
+    exchange_name = 'binance_futures'
     # Update Data before Backtest
     update_data = True
     # Minute granularity
@@ -63,7 +65,6 @@ class BinanceFuturesBackTest(BackTest, BinanceFuturesStub):
             strategy (function): The strategy function to be executed during the backtest.
         """   
         self.bin_size = bin_size
-        self.set_paths('binance_futures', pair=self.pair, bin_size=self.bin_size)  
         self.load_ohlcv(bin_size)
 
         BinanceFuturesStub.on_update(self, bin_size, strategy)
@@ -86,11 +87,12 @@ class BinanceFuturesBackTest(BackTest, BinanceFuturesStub):
         file = self.OHLC_FILENAME #OHLC_FILENAME.format("binance_futures", self.pair, self.bin_size)
         search_left = self.search_oldest           
 
-        if self.minute_granularity == True:
-            #self.timeframe = bin_size.add('1m')  # add 1m timeframe to the set (sets wont allow duplicates) in case we need minute granularity 
-            bin_size = '1m'                                  
+        if self.minute_granularity:
+            bin_size = self.base_tf  # '1m' when minute_granularity is True
+        elif len(bin_size) > 1:
+            bin_size = self.base_tf  # GCD-computed base tf
         else:
-            bin_size = bin_size[0]                                
+            bin_size = bin_size[0]
 
         while True:
             try:
