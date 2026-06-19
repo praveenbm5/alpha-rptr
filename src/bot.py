@@ -275,11 +275,11 @@ class Bot:
         self.exchange.ohlcv_len = self.ohlcv_len()
         self.exchange.on_update(self.bin_size, self.strategy)
 
-        logger.info(f"Starting Bot")
+        logger.info(f"Pair: {self.pair}")
         logger.info(f"Strategy : {type(self).__name__}")
         logger.info(f"Balance : {self.exchange.get_balance()}")
 
-        notify(f"Starting Bot\n"
+        notify(f"Pair: {self.pair}\n"
                f"Strategy : {type(self).__name__}\n"
                f"Balance : {self.exchange.get_balance()}")
         

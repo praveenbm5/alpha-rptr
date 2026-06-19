@@ -250,8 +250,8 @@ def tv_supertrend(high, low, close, length=14, multiplier=3):
     lowerband = hl2 - (multiplier * atr)
 
     # initialize Supertrend column to 1
-    dir = [np.NaN] * close.size
-    trend = [np.NaN] * close.size
+    dir = [np.nan] * close.size
+    trend = [np.nan] * close.size
     
     for i in range(1, len(close)):
         curr, prev = i, i-1

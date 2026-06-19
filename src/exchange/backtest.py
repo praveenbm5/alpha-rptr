@@ -52,7 +52,9 @@ class BackTest(Stub):
         """
         Stub.__init__(self)
         # Market price
-        self.market_price = 0         
+        self.market_price = 0
+        # Base timeframe for download and loop control (GCD of all strategy tfs)
+        self.base_tf = None
         # Balance
         self.start_balance = self.get_balance()
         # OHLCV
@@ -203,21 +205,28 @@ class BackTest(Stub):
         start = time.time()
 
         # load and resample warmup data
-        self.warmup_len = (allowed_range_minute_granularity[self.warmup_tf][3] * self.ohlcv_len) \
-             if self.minute_granularity else self.ohlcv_len           
+        if self.minute_granularity:
+            self.warmup_len = allowed_range_minute_granularity[self.warmup_tf][3] * self.ohlcv_len
+        elif len(self.bin_size) > 1:
+            base_tf_minutes = allowed_range_minute_granularity[self.base_tf][3]
+            warmup_tf_minutes = allowed_range_minute_granularity[self.warmup_tf][3]
+            self.warmup_len = math.ceil(warmup_tf_minutes / base_tf_minutes) * self.ohlcv_len
+        else:
+            self.warmup_len = self.ohlcv_len
 
         if self.timeframe_data is None: 
             self.timeframe_data = {}          
             for t in self.bin_size:            
                 self.timeframe_data[t] = resample(self.df_ohlcv, t, minute_granularity=self.minute_granularity) \
-                                        if self.minute_granularity else self.df_ohlcv # if a single timeframe is used without minute_granularity
-                                                                                      # it already resampled the data after downloading it 
+                                        if (self.minute_granularity or len(self.bin_size) > 1) else self.df_ohlcv
                 self.timeframe_info[t] = {
-                    "allowed_range": allowed_range_minute_granularity[t][0] if self.minute_granularity else self.bin_size[0], #allowed_range[t][0],
+                    "allowed_range": self.base_tf if (self.minute_granularity or len(self.bin_size) > 1) else self.bin_size[0],
                     "ohlcv": self.timeframe_data[t][:-1], # Dataframe with closed candles,
-                    "last_action_index": math.ceil(self.warmup_len / allowed_range_minute_granularity[t][3]) \
-                                        if self.minute_granularity else self.warmup_len
-                }                     
+                    "last_action_index": math.ceil(
+                        self.warmup_len * allowed_range_minute_granularity[self.base_tf][3]
+                        / allowed_range_minute_granularity[t][3]
+                    ) if (self.minute_granularity or len(self.bin_size) > 1) else self.warmup_len
+                }
 
         #logger.info(f"timeframe info: {self.timeframe_info}")
         for i in range(self.warmup_len):
@@ -231,7 +240,7 @@ class BackTest(Stub):
             
             # action is either the(only) key of self.timeframe_info dictionary, which is a single timeframe string
             # or "1m" when minute granularity is needed - multiple timeframes or self.minute_granularity = True
-            action = "1m" if (self.minute_granularity or len(self.timeframe_info) > 1) else self.bin_size[0]
+            action = self.base_tf if (self.minute_granularity or len(self.timeframe_info) > 1) else self.bin_size[0]
             
             # Timeframes to be updated
             timeframes_to_process = [allowed_range_minute_granularity[t][3] if self.timeframes_sorted != None else 
@@ -264,7 +273,7 @@ class BackTest(Stub):
                 low = tf_ohlcv_data['low'].values
                 volume = tf_ohlcv_data['volume'].values
 
-                if (t == "1m" and self.minute_granularity) or self.minute_granularity != True:
+                if t == self.base_tf:
                     if self.get_position_size() > 0 and low[-1] > self.get_trail_price():
                         self.set_trail_price(low[-1])
                     if self.get_position_size() < 0 and high[-1] < self.get_trail_price():
@@ -396,17 +405,34 @@ class BackTest(Stub):
        
         start_time = self.get_launch_date() + 1 * timedelta(days=1)
         end_time = datetime.now(timezone.utc)
-        file = self.OHLC_FILENAME #OHLC_FILENAME.format("binance_futures", self.pair, bin_size) 
-        #print(file)
-        #print(self.bin_size)
-        # Force minute granularity if multiple timeframes are used
-        if len(bin_size) > 1:
-            self.minute_granularity = True   
 
-        if self.minute_granularity and "1m" not in bin_size:
-            bin_size.append('1m') # add 1m timeframe to the list in case we need minute granularity    
-        
-        self.bin_size = bin_size    
+        if len(bin_size) > 1:
+            from math import gcd
+            from functools import reduce
+            minutes = [allowed_range_minute_granularity[t][3] for t in bin_size]
+            base_minutes = reduce(gcd, minutes)
+            base_tf_str = find_timeframe_string(base_minutes)
+            if base_tf_str == '1m' or base_tf_str is None:
+                self.minute_granularity = True
+                self.base_tf = '1m'
+                if '1m' not in bin_size:
+                    bin_size.append('1m')
+            else:
+                self.base_tf = base_tf_str
+                if self.base_tf not in bin_size:
+                    bin_size.insert(0, self.base_tf)
+        elif self.minute_granularity:
+            self.base_tf = '1m'
+            if '1m' not in bin_size:
+                bin_size.append('1m')
+        else:
+            self.base_tf = bin_size[0]
+
+        self.bin_size = bin_size
+
+        if hasattr(self, 'exchange_name'):
+            self.set_paths(self.exchange_name, bin_size=self.base_tf)
+        file = self.OHLC_FILENAME
 
         warmup = None # warmup needed for each timeframe in munutes         
 

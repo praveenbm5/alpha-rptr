@@ -16,3 +16,4 @@ ciso8601
 pycryptodome
 influxdb-client[ciso]
 PyQt6
+setuptools<81
